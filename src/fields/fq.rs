@@ -12,6 +12,8 @@ use lazy_static::lazy_static;
 use ff::{FieldBits, PrimeFieldBits};
 
 use crate::arithmetic::{adc, mac, mul_acc, sbb, square_acc, SqrtTableHelpers};
+#[cfg(feature = "deferred")]
+use crate::deferred::{DeferredField, Product};
 
 #[cfg(feature = "sqrt-table")]
 use crate::arithmetic::SqrtTables;
@@ -414,6 +416,45 @@ impl Fq {
         let mask = (((self.0[0] | self.0[1] | self.0[2] | self.0[3]) == 0) as u64).wrapping_sub(1);
 
         Fq([d0 & mask, d1 & mask, d2 & mask, d3 & mask])
+    }
+
+}
+
+#[cfg(feature = "deferred")]
+impl DeferredField for Fq {
+    type Accumulator = Product<Fq>;
+
+    #[cfg_attr(not(feature = "uninline-portable"), inline)]
+    fn mul_accumulate(acc: &mut Self::Accumulator, a: &Fq, b: &Fq) {
+        let (limbs, c) = mul_acc(acc.limbs, &a.0, &b.0);
+        acc.limbs = limbs;
+        let (carry, overflow) = acc.carry.overflowing_add(c);
+        debug_assert!(!overflow, "carry overflow: too many accumulated products");
+        acc.carry = carry;
+    }
+
+    #[cfg_attr(not(feature = "uninline-portable"), inline)]
+    fn square_accumulate(acc: &mut Self::Accumulator, a: &Fq) {
+        let (limbs, c) = square_acc(acc.limbs, &a.0);
+        acc.limbs = limbs;
+        let (carry, overflow) = acc.carry.overflowing_add(c);
+        debug_assert!(!overflow, "carry overflow: too many accumulated products");
+        acc.carry = carry;
+    }
+
+    #[cfg_attr(not(feature = "uninline-portable"), inline)]
+    fn reduce(acc: Self::Accumulator) -> Fq {
+        /// 2^448 mod q (little-endian limbs).
+        const B448: [u64; 4] = [
+            0xcc920bb9994a8dd9,
+            0x87a7dcbe1ff6e0d7,
+            0x496d41af7ccfdaa9,
+            0x0ee4537bfffffffc,
+        ];
+        let limbs = acc.partial_reduce(&B448, &R2.0);
+        Fq::montgomery_reduce(
+            limbs[0], limbs[1], limbs[2], limbs[3], limbs[4], limbs[5], limbs[6], limbs[7],
+        )
     }
 }
 
